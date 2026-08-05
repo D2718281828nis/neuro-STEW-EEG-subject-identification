@@ -1,0 +1,114 @@
+{
+  "design": {
+    "subjects": 48,
+    "recordings": 96,
+    "sampling_hz": 128,
+    "window_seconds": 4,
+    "step_seconds": 2,
+    "ctx_nodes": 14,
+    "measured_channel_nodes": 14,
+    "regional_composite_nodes": 0,
+    "thal_neighbors": 14,
+    "thal_status": "latent GAT readout; not measured thalamic EEG",
+    "baseline": "within-subject rest median and MAD"
+  },
+  "gat_condition_classifier": {
+    "recording_accuracy": 0.8854166666666666,
+    "recording_auc": 0.96875,
+    "window_accuracy": 0.7415540540540541,
+    "window_auc": 0.81310839978492
+  },
+  "paired": {
+    "engagement": {
+      "rest_median": 0.5,
+      "high_median": 0.5042333899590311,
+      "median_delta": 0.004233389959031136,
+      "median_delta_ci95_low": -0.07717462405998912,
+      "median_delta_ci95_high": 0.09818194797498336,
+      "mean_delta": -0.020545454470360276,
+      "cohen_dz": -0.08866714719797811,
+      "rank_biserial": -0.1054421768707483,
+      "wilcoxon_two_sided_p": 0.5315408359856306,
+      "wilcoxon_greater_p": 0.7375642695371454,
+      "n": 48
+    },
+    "alpha_gating": {
+      "rest_median": 0.5,
+      "high_median": 0.6522614637704347,
+      "median_delta": 0.15226146377043454,
+      "median_delta_ci95_low": 0.05479292416879783,
+      "median_delta_ci95_high": 0.24941185195715873,
+      "mean_delta": 0.14097714450315932,
+      "cohen_dz": 0.7087512226683066,
+      "rank_biserial": 0.6683673469387755,
+      "wilcoxon_two_sided_p": 2.315797344465409e-05,
+      "wilcoxon_greater_p": 1.1578986722327045e-05,
+      "n": 48
+    },
+    "phase_organization": {
+      "rest_median": 0.5,
+      "high_median": 0.46863686721291464,
+      "median_delta": -0.03136313278708544,
+      "median_delta_ci95_low": -0.043923715861599155,
+      "median_delta_ci95_high": -0.017978241434388403,
+      "mean_delta": -0.02012568617603358,
+      "cohen_dz": -0.2855925711105078,
+      "rank_biserial": -0.3758503401360544,
+      "wilcoxon_two_sided_p": 0.022766877140448116,
+      "wilcoxon_greater_p": 0.9889315344616705,
+      "n": 48
+    },
+    "spatial_selectivity": {
+      "rest_median": 0.5,
+      "high_median": 0.5883078463315417,
+      "median_delta": 0.08830784633154165,
+      "median_delta_ci95_low": -0.013110773010038382,
+      "median_delta_ci95_high": 0.2308692351730356,
+      "mean_delta": 0.10971524342352429,
+      "cohen_dz": 0.4504860631975275,
+      "rank_biserial": 0.44727891156462585,
+      "wilcoxon_two_sided_p": 0.006312076966963787,
+      "wilcoxon_greater_p": 0.0031560384834818933,
+      "n": 48
+    },
+    "asi_eeg": {
+      "rest_median": 0.5128594782781875,
+      "high_median": 0.531097236730201,
+      "median_delta": 0.021818258595144746,
+      "median_delta_ci95_low": 0.004927572851933126,
+      "median_delta_ci95_high": 0.053250007175060954,
+      "mean_delta": 0.03920939986503273,
+      "cohen_dz": 0.4909540343838604,
+      "rank_biserial": 0.5068027210884354,
+      "wilcoxon_two_sided_p": 0.0018179601238585974,
+      "wilcoxon_greater_p": 0.0009089800619292987,
+      "n": 48
+    },
+    "asi_projected": {
+      "rest_median": 0.3860555402651852,
+      "high_median": 0.4364502268951276,
+      "median_delta": 0.03447108379376579,
+      "median_delta_ci95_low": 0.020501721572426447,
+      "median_delta_ci95_high": 0.06909561395851638,
+      "mean_delta": 0.05430720851900165,
+      "cohen_dz": 0.6532341499953449,
+      "rank_biserial": 0.6530612244897959,
+      "wilcoxon_two_sided_p": 3.7655198283914615e-05,
+      "wilcoxon_greater_p": 1.8827599141957307e-05,
+      "n": 48
+    },
+    "relay_effective_span": {
+      "rest_median": 12.121080547867962,
+      "high_median": 10.75978652161433,
+      "median_delta": -1.3947870890764058,
+      "median_delta_ci95_low": -1.8672582118883985,
+      "median_delta_ci95_high": -1.0478689215259758,
+      "mean_delta": -1.5306861332283732,
+      "cohen_dz": -1.6284646907294311,
+      "rank_biserial": -1.0,
+      "wilcoxon_two_sided_p": 7.105427357601002e-15,
+      "wilcoxon_greater_p": 1.0,
+      "n": 48
+    }
+  }
+}

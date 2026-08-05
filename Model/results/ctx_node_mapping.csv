@@ -1,0 +1,15 @@
+node,node_type,electrodes,region
+CTX_0,measured_channel,AF3,prefrontal
+CTX_1,measured_channel,F7,frontal
+CTX_2,measured_channel,F3,frontal
+CTX_3,measured_channel,FC5,frontocentral
+CTX_4,measured_channel,T7,temporal
+CTX_5,measured_channel,P7,parietal
+CTX_6,measured_channel,O1,occipital
+CTX_7,measured_channel,O2,occipital
+CTX_8,measured_channel,P8,parietal
+CTX_9,measured_channel,T8,temporal
+CTX_10,measured_channel,FC6,frontocentral
+CTX_11,measured_channel,F4,frontal
+CTX_12,measured_channel,F8,frontal
+CTX_13,measured_channel,AF4,prefrontal
