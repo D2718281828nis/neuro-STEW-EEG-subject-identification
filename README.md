@@ -1,5 +1,7 @@
 ﻿# Simulations Task EEG Workload Dataset (STEW)– subject’s identification 
 
+dataset's source: 2018 STEW: Simultaneous Task EEG Workload Dataset. Available at: https://dx.doi.org/10.21227/44r8-ya50
+
 **STEW-SI** is a lightweight artificial neural network based subject’s identification framework implemented in Python with categorical feature support.
 
 **About STEW dataset:**
