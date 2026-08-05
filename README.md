@@ -17,6 +17,20 @@ The data for each subject follows the naming convention: subno_task.txt. For exa
 **Methodology:**
 From the pre-processed EEG signal 17 statistical, entropy, and energy features were extracted. For performing the identification task Artificial neural network (ANN) was used. 
 
+## H1: paired rest vs high ASI-EEG across subjects
+
+The key H1 plot compares each subject’s ASI-EEG value in the rest condition against the same subject’s ASI-EEG value in the high-workload condition. Each subject is represented by a paired line connecting the two conditions, while rest is shown in blue and high workload in orange. This visualization emphasizes within-subject change rather than between-subject differences.
+
+The interpretation is direct: if the condition increases cortical arousal-related EEG structure under workload, the paired lines should generally slope upward, and the group median should shift higher in the high condition. In this dataset, the median ASI-EEG increases from rest to high workload (approximately 0.513 to 0.531), with a positive median within-subject difference and a statistically significant Wilcoxon paired test (p = 0.0018). This supports H1: the workload condition shows a measurable increase in the composite ASI-EEG signal relative to rest.
+
+The corresponding proof figures are saved in the Model results directory:
+- `Model/results/h1_paired_asi_eeg.png`
+- `Model/results/h1_delta_distribution.png`
+
+## Results summary
+
+For the primary H1 test on 48 subjects, the median ASI-EEG was 0.5129 at rest and 0.5311 during the high-workload condition. The paired median change was +0.0218 (95% bootstrap CI: [0.0049, 0.0533]), and the Wilcoxon signed-rank test was significant at p = 0.00182 (two-sided). This supports H1: ASI-EEG is higher during high workload than at rest in this dataset.
+
 ### Support
 
 There are many ways to support a project - starring⭐️ the GitHub repos is just one.
