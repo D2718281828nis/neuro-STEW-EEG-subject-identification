@@ -1,8 +1,9 @@
 import argparse
-from typing import Callable, Dict, List, Tuple
+from collections.abc import Callable
 
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -19,7 +20,7 @@ def build_sbm_graph(
     within_prob: float,
     between_prob: float,
     seed: int,
-) -> Tuple[torch.Tensor, np.ndarray, np.ndarray]:
+) -> tuple[torch.Tensor, np.ndarray, np.ndarray]:
     """Build a stochastic block model adjacency matrix for EEG contact nodes."""
     rng = np.random.default_rng(seed)
     class_sizes = np.full(num_classes, num_nodes // num_classes, dtype=int)
@@ -64,7 +65,7 @@ def normalize_row_stochastic(adj: torch.Tensor) -> torch.Tensor:
     a_hat = safe_adj / row_sum
     row_sum_after = a_hat.sum(dim=1)
     if not torch.allclose(row_sum_after, torch.ones_like(row_sum_after), atol=1e-5):
-        raise ValueError('A_hat rows do not sum to 1 after normalization.')
+        raise ValueError("A_hat rows do not sum to 1 after normalization.")
     return a_hat
 
 
@@ -136,7 +137,7 @@ def integrate(
         dXdt = derivative_fn(X)
         X = X + step * dXdt
         if torch.isnan(X).any():
-            raise ValueError(f'NaN detected during integration at t={t:.4f}.')
+            raise ValueError(f"NaN detected during integration at t={t:.4f}.")
         t += step
     return X
 
@@ -162,7 +163,7 @@ def grand_derivative(
 
 def kuramoto_derivative(X: torch.Tensor, a_hat: torch.Tensor, omega: torch.Tensor, K: float) -> torch.Tensor:
     diff = X.unsqueeze(0) - X.unsqueeze(1)
-    coupling = torch.einsum('ij,ijd->id', a_hat, torch.sin(diff))
+    coupling = torch.einsum("ij,ijd->id", a_hat, torch.sin(diff))
     return omega + K * coupling
 
 
@@ -220,7 +221,7 @@ def velocity_synchronization(X: torch.Tensor, derivative_fn: Callable[[torch.Ten
     return float(mean_val)
 
 
-def fit_pca(X: np.ndarray, n_components: int = 2) -> Tuple[np.ndarray, np.ndarray]:
+def fit_pca(X: np.ndarray, n_components: int = 2) -> tuple[np.ndarray, np.ndarray]:
     mean = X.mean(axis=0, keepdims=True)
     centered = X - mean
     cov = centered.T @ centered / (centered.shape[0] - 1)
@@ -235,16 +236,16 @@ def transform_pca(X: np.ndarray, mean: np.ndarray, components: np.ndarray) -> np
 
 
 def plot_metric_curve(
-    results: Dict[str, List[float]],
-    T_values: List[float],
+    results: dict[str, list[float]],
+    T_values: list[float],
     ylabel: str,
     filename: str,
     title: str,
 ) -> None:
     plt.figure(figsize=(8, 5))
     for model_name, values in results.items():
-        plt.plot(T_values, values, marker='o', label=model_name)
-    plt.xlabel('Terminal time T')
+        plt.plot(T_values, values, marker="o", label=model_name)
+    plt.xlabel("Terminal time T")
     plt.ylabel(ylabel)
     plt.title(title)
     plt.legend()
@@ -255,7 +256,7 @@ def plot_metric_curve(
 
 
 def plot_feature_pca(
-    state_by_model: Dict[str, Dict[float, torch.Tensor]],
+    state_by_model: dict[str, dict[float, torch.Tensor]],
     labels: np.ndarray,
     small_T: float,
     large_T: float,
@@ -275,41 +276,41 @@ def plot_feature_pca(
             X = state_by_model[model_name][T].cpu().numpy()
             X2 = transform_pca(X, mean, components)
             ax = axes[row, col]
-            scatter = ax.scatter(
+            ax.scatter(
                 X2[:, 0],
                 X2[:, 1],
                 c=labels,
-                cmap='tab10',
+                cmap="tab10",
                 s=30,
                 alpha=0.8,
             )
-            ax.set_title(f'{model_name}\nT={T}')
-            ax.set_xlabel('PCA 1')
-            ax.set_ylabel('PCA 2')
+            ax.set_title(f"{model_name}\nT={T}")
+            ax.set_xlabel("PCA 1")
+            ax.set_ylabel("PCA 2")
             ax.grid(True, alpha=0.2)
 
-    fig.suptitle('PCA of node representations at small and large T', fontsize=16)
+    fig.suptitle("PCA of node representations at small and large T", fontsize=16)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(filename)
     plt.close()
 
 
-def plot_training_history(history: Dict[str, List[float]], filename: str) -> None:
+def plot_training_history(history: dict[str, list[float]], filename: str) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
-    axes[0].plot(history['train_loss'], label='train')
-    axes[0].plot(history['val_loss'], label='val')
-    axes[0].set_title('Training and Validation Loss')
-    axes[0].set_xlabel('Epoch')
-    axes[0].set_ylabel('Loss')
+    axes[0].plot(history["train_loss"], label="train")
+    axes[0].plot(history["val_loss"], label="val")
+    axes[0].set_title("Training and Validation Loss")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
 
-    axes[1].plot(history['train_accuracy'], label='train')
-    axes[1].plot(history['val_accuracy'], label='val')
-    axes[1].set_title('Training and Validation Accuracy')
-    axes[1].set_xlabel('Epoch')
-    axes[1].set_ylabel('Accuracy')
+    axes[1].plot(history["train_accuracy"], label="train")
+    axes[1].plot(history["val_accuracy"], label="val")
+    axes[1].set_title("Training and Validation Accuracy")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Accuracy")
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
 
@@ -320,10 +321,10 @@ def plot_training_history(history: Dict[str, List[float]], filename: str) -> Non
 
 def plot_confusion_matrix(cm: np.ndarray, model_name: str, filename: str) -> None:
     fig, ax = plt.subplots(figsize=(5, 4))
-    im = ax.imshow(cm, interpolation='nearest', cmap='Blues')
-    ax.set_title(f'Confusion matrix: {model_name}')
-    ax.set_xlabel('Predicted label')
-    ax.set_ylabel('True label')
+    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+    ax.set_title(f"Confusion matrix: {model_name}")
+    ax.set_xlabel("Predicted label")
+    ax.set_ylabel("True label")
     ax.set_xticks([0, 1, 2])
     ax.set_yticks([0, 1, 2])
     ax.set_xticklabels([0, 1, 2])
@@ -332,7 +333,7 @@ def plot_confusion_matrix(cm: np.ndarray, model_name: str, filename: str) -> Non
     thresh = cm.max() / 2.0 if cm.max() > 0 else 0.0
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):
-            ax.text(j, i, int(cm[i, j]), ha='center', va='center', color='white' if cm[i, j] > thresh else 'black')
+            ax.text(j, i, int(cm[i, j]), ha="center", va="center", color="white" if cm[i, j] > thresh else "black")
     fig.tight_layout()
     fig.savefig(filename)
     plt.close()
@@ -347,7 +348,7 @@ def train_classifier(
     epochs: int = 200,
     lr: float = 1e-3,
     batch_size: int = 32,
-) -> Tuple[MLPClassifier, Dict[str, List[float]], np.ndarray]:
+) -> tuple[MLPClassifier, dict[str, list[float]], np.ndarray]:
     torch.manual_seed(seed)
     n = X.shape[0]
     indices = torch.randperm(n)
@@ -370,10 +371,10 @@ def train_classifier(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     history = {
-        'train_loss': [],
-        'val_loss': [],
-        'train_accuracy': [],
-        'val_accuracy': [],
+        "train_loss": [],
+        "val_loss": [],
+        "train_accuracy": [],
+        "val_accuracy": [],
     }
 
     for epoch in range(epochs):
@@ -403,10 +404,10 @@ def train_classifier(
         val_loss /= len(val_dataset)
         val_acc = val_correct / len(val_dataset)
 
-        history['train_loss'].append(train_loss)
-        history['val_loss'].append(val_loss)
-        history['train_accuracy'].append(train_acc)
-        history['val_accuracy'].append(val_acc)
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        history["train_accuracy"].append(train_acc)
+        history["val_accuracy"].append(val_acc)
 
     with torch.no_grad():
         logits = model(x_val)
@@ -430,8 +431,10 @@ def plot_graph(adjacency: torch.Tensor, labels: np.ndarray, filename: str) -> No
     n = adjacency.shape[0]
     num_classes = int(labels.max() + 1)
     class_centers = np.stack(
-        [np.cos(np.linspace(0, 2 * np.pi, num_classes, endpoint=False)),
-         np.sin(np.linspace(0, 2 * np.pi, num_classes, endpoint=False))],
+        [
+            np.cos(np.linspace(0, 2 * np.pi, num_classes, endpoint=False)),
+            np.sin(np.linspace(0, 2 * np.pi, num_classes, endpoint=False)),
+        ],
         axis=1,
     )
     positions = np.zeros((n, 2), dtype=np.float32)
@@ -448,23 +451,24 @@ def plot_graph(adjacency: torch.Tensor, labels: np.ndarray, filename: str) -> No
             ax.plot(
                 [positions[i, 0], positions[j, 0]],
                 [positions[i, 1], positions[j, 1]],
-                color='gray',
+                color="gray",
                 alpha=0.3,
                 linewidth=0.8,
             )
     scatter = ax.scatter(
-        positions[:, 0], positions[:, 1],
+        positions[:, 0],
+        positions[:, 1],
         c=labels,
-        cmap='tab10',
+        cmap="tab10",
         s=80,
-        edgecolor='k',
+        edgecolor="k",
         linewidth=0.4,
     )
-    ax.set_title('Synthetic SBM EEG contact graph (class-colored)')
+    ax.set_title("Synthetic SBM EEG contact graph (class-colored)")
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.set_aspect('equal')
-    ax.legend(*scatter.legend_elements(), title='Class', loc='upper right')
+    ax.set_aspect("equal")
+    ax.legend(*scatter.legend_elements(), title="Class", loc="upper right")
     fig.tight_layout()
     fig.savefig(filename)
     plt.close()
@@ -476,23 +480,23 @@ def compute_metrics(
     labels: np.ndarray,
     model_name: str,
     derivative_fn: Callable[[torch.Tensor], torch.Tensor] = None,
-) -> Dict[str, float]:
-    metrics: Dict[str, float] = {}
-    metrics['mean_pairwise_distance'] = mean_pairwise_distance(state)
-    metrics['dirichlet_energy'] = dirichlet_energy(state, a_hat)
-    metrics['class_separation'] = class_separation_score(state, labels)
-    metrics['cosine_similarity'] = average_cosine_similarity(state)
+) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    metrics["mean_pairwise_distance"] = mean_pairwise_distance(state)
+    metrics["dirichlet_energy"] = dirichlet_energy(state, a_hat)
+    metrics["class_separation"] = class_separation_score(state, labels)
+    metrics["cosine_similarity"] = average_cosine_similarity(state)
     if derivative_fn is not None:
-        metrics['velocity_sync'] = velocity_synchronization(state, derivative_fn)
+        metrics["velocity_sync"] = velocity_synchronization(state, derivative_fn)
     else:
-        metrics['velocity_sync'] = float('nan')
+        metrics["velocity_sync"] = float("nan")
     return metrics
 
 
-def print_table(results: List[Dict[str, object]]) -> None:
+def print_table(results: list[dict[str, object]]) -> None:
     header = f"{'Model':<30} {'T':>6} {'MeanDist':>10} {'Dirichlet':>12} {'ClassSep':>10} {'CosSim':>9}"
     print(header)
-    print('-' * len(header))
+    print("-" * len(header))
     for row in results:
         print(
             f"{row['model']:<30} {row['T']:6.1f} {row['mean_pairwise_distance']:10.4f} "
@@ -501,18 +505,22 @@ def print_table(results: List[Dict[str, object]]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='KuramotoGNN vs GRAND diffusion demonstration')
-    parser.add_argument('--num_nodes', type=int, default=300)
-    parser.add_argument('--feature_dim', type=int, default=20)
-    parser.add_argument('--num_classes', type=int, default=3)
-    parser.add_argument('--K', type=float, default=2.0)
-    parser.add_argument('--dt', type=float, default=0.05)
-    parser.add_argument('--max_T', type=float, default=32.0)
-    parser.add_argument('--seed', type=int, default=123)
-    parser.add_argument('--within_prob', type=float, default=0.15)
-    parser.add_argument('--between_prob', type=float, default=0.01)
-    parser.add_argument('--grand_beta', type=float, default=0.5,
-                        help='Residual strength for GRAND diffusion (lower preserves more original features)')
+    parser = argparse.ArgumentParser(description="KuramotoGNN vs GRAND diffusion demonstration")
+    parser.add_argument("--num_nodes", type=int, default=300)
+    parser.add_argument("--feature_dim", type=int, default=20)
+    parser.add_argument("--num_classes", type=int, default=3)
+    parser.add_argument("--K", type=float, default=2.0)
+    parser.add_argument("--dt", type=float, default=0.05)
+    parser.add_argument("--max_T", type=float, default=32.0)
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--within_prob", type=float, default=0.15)
+    parser.add_argument("--between_prob", type=float, default=0.01)
+    parser.add_argument(
+        "--grand_beta",
+        type=float,
+        default=0.5,
+        help="Residual strength for GRAND diffusion (lower preserves more original features)",
+    )
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -542,33 +550,33 @@ def main() -> None:
 
     T_values = [0.0, 1.0, 2.0, 4.0, 8.0, 16.0, args.max_T]
     models = [
-        ('GRAND', lambda X: grand_derivative(X, A_hat, identity, X0, beta=args.grand_beta), None),
+        ("GRAND", lambda X: grand_derivative(X, A_hat, identity, X0, beta=args.grand_beta), None),
         (
-            'KuramotoGNN nonidentical omega',
+            "KuramotoGNN nonidentical omega",
             lambda X: kuramoto_derivative(X, A_hat, omega, args.K),
             lambda X: kuramoto_derivative(X, A_hat, omega, args.K),
         ),
         (
-            'KuramotoGNN identical omega',
+            "KuramotoGNN identical omega",
             lambda X: kuramoto_derivative(X, A_hat, omega_identical, args.K),
             lambda X: kuramoto_derivative(X, A_hat, omega_identical, args.K),
         ),
     ]
 
-    results: List[Dict[str, object]] = []
-    metric_history: Dict[str, Dict[str, List[float]]] = {
-        'mean_pairwise_distance': {},
-        'dirichlet_energy': {},
-        'class_separation': {},
-        'cosine_similarity': {},
+    results: list[dict[str, object]] = []
+    metric_history: dict[str, dict[str, list[float]]] = {
+        "mean_pairwise_distance": {},
+        "dirichlet_energy": {},
+        "class_separation": {},
+        "cosine_similarity": {},
     }
-    state_by_model: Dict[str, Dict[float, torch.Tensor]] = {name: {} for name, _, _ in models}
+    state_by_model: dict[str, dict[float, torch.Tensor]] = {name: {} for name, _, _ in models}
 
     for model_name, derivative_fn, velocity_fn in models:
-        metric_history['mean_pairwise_distance'][model_name] = []
-        metric_history['dirichlet_energy'][model_name] = []
-        metric_history['class_separation'][model_name] = []
-        metric_history['cosine_similarity'][model_name] = []
+        metric_history["mean_pairwise_distance"][model_name] = []
+        metric_history["dirichlet_energy"][model_name] = []
+        metric_history["class_separation"][model_name] = []
+        metric_history["cosine_similarity"][model_name] = []
 
         for T in T_values:
             with torch.no_grad():
@@ -577,52 +585,52 @@ def main() -> None:
             metrics = compute_metrics(state, A_hat, labels, model_name, velocity_fn)
             results.append(
                 {
-                    'model': model_name,
-                    'T': T,
-                    'mean_pairwise_distance': metrics['mean_pairwise_distance'],
-                    'dirichlet_energy': metrics['dirichlet_energy'],
-                    'class_separation': metrics['class_separation'],
-                    'cosine_similarity': metrics['cosine_similarity'],
+                    "model": model_name,
+                    "T": T,
+                    "mean_pairwise_distance": metrics["mean_pairwise_distance"],
+                    "dirichlet_energy": metrics["dirichlet_energy"],
+                    "class_separation": metrics["class_separation"],
+                    "cosine_similarity": metrics["cosine_similarity"],
                 }
             )
-            metric_history['mean_pairwise_distance'][model_name].append(metrics['mean_pairwise_distance'])
-            metric_history['dirichlet_energy'][model_name].append(metrics['dirichlet_energy'])
-            metric_history['class_separation'][model_name].append(metrics['class_separation'])
-            metric_history['cosine_similarity'][model_name].append(metrics['cosine_similarity'])
+            metric_history["mean_pairwise_distance"][model_name].append(metrics["mean_pairwise_distance"])
+            metric_history["dirichlet_energy"][model_name].append(metrics["dirichlet_energy"])
+            metric_history["class_separation"][model_name].append(metrics["class_separation"])
+            metric_history["cosine_similarity"][model_name].append(metrics["cosine_similarity"])
 
-    print('\nObserved metric trends for each model and T:')
+    print("\nObserved metric trends for each model and T:")
     print_table(results)
 
     plot_metric_curve(
-        metric_history['mean_pairwise_distance'],
+        metric_history["mean_pairwise_distance"],
         T_values,
-        ylabel='Mean pairwise distance',
-        filename='Model KuramotoGNN/mean_pairwise_distance.png',
-        title='Mean pairwise distance vs terminal time T',
+        ylabel="Mean pairwise distance",
+        filename="Model KuramotoGNN/mean_pairwise_distance.png",
+        title="Mean pairwise distance vs terminal time T",
     )
 
     plot_metric_curve(
-        metric_history['dirichlet_energy'],
+        metric_history["dirichlet_energy"],
         T_values,
-        ylabel='Dirichlet energy',
-        filename='Model KuramotoGNN/dirichlet_energy.png',
-        title='Dirichlet energy vs terminal time T',
+        ylabel="Dirichlet energy",
+        filename="Model KuramotoGNN/dirichlet_energy.png",
+        title="Dirichlet energy vs terminal time T",
     )
 
     plot_metric_curve(
-        metric_history['class_separation'],
+        metric_history["class_separation"],
         T_values,
-        ylabel='Class separation score',
-        filename='Model KuramotoGNN/class_separation.png',
-        title='Class separation vs terminal time T',
+        ylabel="Class separation score",
+        filename="Model KuramotoGNN/class_separation.png",
+        title="Class separation vs terminal time T",
     )
 
     plot_metric_curve(
-        metric_history['cosine_similarity'],
+        metric_history["cosine_similarity"],
         T_values,
-        ylabel='Feature cosine similarity',
-        filename='Model KuramotoGNN/cosine_similarity.png',
-        title='Cosine similarity vs terminal time T',
+        ylabel="Feature cosine similarity",
+        filename="Model KuramotoGNN/cosine_similarity.png",
+        title="Cosine similarity vs terminal time T",
     )
 
     plot_feature_pca(
@@ -630,10 +638,10 @@ def main() -> None:
         labels,
         small_T=T_values[1] if len(T_values) > 1 else T_values[0],
         large_T=T_values[-1],
-        filename='Model KuramotoGNN/pca_features.png',
+        filename="Model KuramotoGNN/pca_features.png",
     )
 
-    plot_graph(adjacency, labels, filename='Model KuramotoGNN/networkx_graph_visulisation.png')
+    plot_graph(adjacency, labels, filename="Model KuramotoGNN/networkx_graph_visulisation.png")
 
     # Train classifiers on final state representations and plot training history.
     for model_name in state_by_model:
@@ -657,17 +665,17 @@ def main() -> None:
         print(f"  Training history saved to: {hist_filename}")
         print(f"  Confusion matrix saved to: {cm_filename}")
 
-    print('\nSaved figures:')
-    print('- Model KuramotoGNN/mean_pairwise_distance.png')
-    print('- Model KuramotoGNN/dirichlet_energy.png')
-    print('- Model KuramotoGNN/class_separation.png')
-    print('- Model KuramotoGNN/cosine_similarity.png')
-    print('- Model KuramotoGNN/pca_features.png')
-    print('- Model KuramotoGNN/networkx_graph_visulisation.png')
+    print("\nSaved figures:")
+    print("- Model KuramotoGNN/mean_pairwise_distance.png")
+    print("- Model KuramotoGNN/dirichlet_energy.png")
+    print("- Model KuramotoGNN/class_separation.png")
+    print("- Model KuramotoGNN/cosine_similarity.png")
+    print("- Model KuramotoGNN/pca_features.png")
+    print("- Model KuramotoGNN/networkx_graph_visulisation.png")
     for model_name in state_by_model:
         print(f"- Model KuramotoGNN/{model_name.replace(' ', '_')}_training_history.png")
         print(f"- Model KuramotoGNN/{model_name.replace(' ', '_')}_confusion_matrix.png")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import re
+import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -26,37 +30,24 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import GroupKFold
 
+# Running this file directly puts its own directory on sys.path[0], not the repo
+# root, so the shared eeg_config module would not otherwise be importable.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from eeg_config import (  # noqa: E402
+    BAND_NAMES,
+    BANDS,
+    CHANNELS,
+    FRONTAL_CHANNELS,
+    FS,
+    POSTERIOR_CHANNELS,
+    REGIONS,
+    STEP_SAMPLES,
+    STEP_SECONDS,
+    WINDOW_SAMPLES,
+    WINDOW_SECONDS,
+)
 
-FS = 128
-WINDOW_SECONDS = 4
-STEP_SECONDS = 2
-WINDOW_SAMPLES = FS * WINDOW_SECONDS
-STEP_SAMPLES = FS * STEP_SECONDS
-
-CHANNELS = [
-    "AF3", "F7", "F3", "FC5", "T7", "P7", "O1",
-    "O2", "P8", "T8", "FC6", "F4", "F8", "AF4",
-]
-
-REGIONS = {
-    "PREFRONTAL": ["AF3", "AF4"],
-    "FRONTAL": ["F7", "F3", "F4", "F8"],
-    "FRONTOCENTRAL": ["FC5", "FC6"],
-    "TEMPORAL": ["T7", "T8"],
-    "PARIETAL": ["P7", "P8"],
-    "OCCIPITAL": ["O1", "O2"],
-}
-
-BANDS = {
-    "theta": (4.0, 8.0),
-    "alpha": (8.0, 13.0),
-    "beta": (13.0, 30.0),
-    "gamma": (30.0, 45.0),
-}
-BAND_NAMES = list(BANDS)
-
-FRONTAL_CHANNELS = ["AF3", "F7", "F3", "FC5", "FC6", "F4", "F8", "AF4"]
-POSTERIOR_CHANNELS = ["P7", "O1", "O2", "P8"]
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -73,20 +64,30 @@ def _channel_indices(names: Iterable[str]) -> list[int]:
     return [CHANNELS.index(name) for name in names]
 
 
+def validate_dataset_files(files: list[Path]) -> None:
+    """Raise an actionable error if any subject is missing a rest or high-workload file."""
+    if not files:
+        raise ValueError("No STEW recordings found")
+    subject_ids = sorted({int(path.stem[3:5]) for path in files})
+    for subject_id in subject_ids:
+        has_rest = any(path.name.startswith(f"sub{subject_id:02d}_") and "_lo" in path.name for path in files)
+        has_high = any(path.name.startswith(f"sub{subject_id:02d}_") and "_hi" in path.name for path in files)
+        if not has_rest or not has_high:
+            raise ValueError(f"Subject {subject_id} is missing a rest or high-workload recording")
+
+
 def node_mapping_frame() -> pd.DataFrame:
     rows: list[dict[str, str]] = []
-    region_for_channel = {
-        channel: region
-        for region, members in REGIONS.items()
-        for channel in members
-    }
+    region_for_channel = {channel: region for region, members in REGIONS.items() for channel in members}
     for index, channel in enumerate(CHANNELS):
-        rows.append({
-            "node": f"CTX_{index}",
-            "node_type": "measured_channel",
-            "electrodes": channel,
-            "region": region_for_channel[channel].lower(),
-        })
+        rows.append(
+            {
+                "node": f"CTX_{index}",
+                "node_type": "measured_channel",
+                "electrodes": channel,
+                "region": region_for_channel[channel].lower(),
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -98,7 +99,7 @@ def _band_mask(frequencies: np.ndarray, low: float, high: float, *, last: bool) 
 
 def _window_view(data: np.ndarray) -> np.ndarray:
     starts = np.arange(0, len(data) - WINDOW_SAMPLES + 1, STEP_SAMPLES)
-    return np.stack([data[start:start + WINDOW_SAMPLES] for start in starts], axis=0)
+    return np.stack([data[start : start + WINDOW_SAMPLES] for start in starts], axis=0)
 
 
 def preprocess_eeg(data: np.ndarray) -> np.ndarray:
@@ -132,7 +133,7 @@ def relative_band_power(windows: np.ndarray) -> np.ndarray:
 
 def theta_wpli(windows: np.ndarray) -> np.ndarray:
     offsets = range(0, WINDOW_SAMPLES - FS + 1, FS // 2)
-    segments = np.stack([windows[:, offset:offset + FS, :] for offset in offsets], axis=1)
+    segments = np.stack([windows[:, offset : offset + FS, :] for offset in offsets], axis=1)
     segments = segments - segments.mean(axis=2, keepdims=True)
     segments = segments * signal.windows.hann(FS, sym=False)[None, None, :, None]
     spectrum = np.fft.rfft(segments, axis=2)
@@ -234,12 +235,14 @@ def baseline_normalize(records: list[RecordingFeatures]) -> tuple[pd.DataFrame, 
             node_z = np.clip(node_z, -6.0, 6.0)
 
             for window_index in range(len(asi)):
-                metadata.append({
-                    "subject": subject,
-                    "condition": condition,
-                    "window": window_index,
-                    "start_seconds": window_index * STEP_SECONDS,
-                })
+                metadata.append(
+                    {
+                        "subject": subject,
+                        "condition": condition,
+                        "window": window_index,
+                        "start_seconds": window_index * STEP_SECONDS,
+                    }
+                )
             node_features.append(node_z)
             asi_components.append(component_scores)
             asi_values.append(asi)
@@ -255,7 +258,7 @@ def baseline_normalize(records: list[RecordingFeatures]) -> tuple[pd.DataFrame, 
 def _attention_forward(parameters: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     n_features = x.shape[-1]
     query = parameters[:n_features]
-    classifier = parameters[n_features:2 * n_features]
+    classifier = parameters[n_features : 2 * n_features]
     bias = parameters[-1]
     scores = np.einsum("nif,f->ni", x, query)
     scores = scores - scores.max(axis=1, keepdims=True)
@@ -275,7 +278,7 @@ def _attention_loss_gradient(
     probability, attention, pooled = _attention_forward(parameters, x)
     n_features = x.shape[-1]
     query = parameters[:n_features]
-    classifier = parameters[n_features:2 * n_features]
+    classifier = parameters[n_features : 2 * n_features]
     eps = 1e-9
     loss = -np.mean(y * np.log(probability + eps) + (1.0 - y) * np.log(1.0 - probability + eps))
     loss += 0.5 * l2 * (query @ query + classifier @ classifier)
@@ -301,11 +304,13 @@ def fit_thal_attention(x: np.ndarray, y: np.ndarray, seed: int) -> np.ndarray:
 
     best = None
     for restart in range(3):
-        initial = np.concatenate([
-            rng.normal(0.0, 0.05 if restart else 0.0, size=n_features),
-            base_classifier,
-            [base_bias],
-        ])
+        initial = np.concatenate(
+            [
+                rng.normal(0.0, 0.05 if restart else 0.0, size=n_features),
+                base_classifier,
+                [base_bias],
+            ]
+        )
         result = optimize.minimize(
             _attention_loss_gradient,
             initial,
@@ -453,18 +458,32 @@ def save_h1_proof_plots(subject_condition: pd.DataFrame, output_dir: Path) -> No
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=Path("dataset"))
-    parser.add_argument("--output", type=Path, default=Path("Model/results"))
+    parser.add_argument("--output", type=Path, default=Path("Model GAT/results"))
     parser.add_argument("--seed", type=int, default=20260805)
     parser.add_argument("--splits", type=int, default=5)
     parser.add_argument("--bootstrap", type=int, default=5000)
     args = parser.parse_args()
 
+    if args.splits < 2:
+        raise ValueError("splits must be at least 2")
+    if args.bootstrap <= 0:
+        raise ValueError("bootstrap must be > 0")
+
     files = sorted(args.dataset.glob("sub??_*.txt"))
-    if len(files) != 96:
-        raise ValueError(f"Expected 96 STEW EEG files, found {len(files)} in {args.dataset}")
+    validate_dataset_files(files)
     records = [extract_recording(path) for path in files]
+    subject_count = len({record.subject for record in records})
+    splits = min(args.splits, subject_count)
+    if splits < args.splits:
+        LOGGER.warning(
+            "Requested splits=%d exceeds the %d subjects available; using %d folds instead.",
+            args.splits,
+            subject_count,
+            splits,
+        )
     metadata, node_features, component_scores, asi = baseline_normalize(records)
 
     component_names = ["engagement", "alpha_gating", "phase_organization", "spatial_selectivity"]
@@ -473,16 +492,14 @@ def main() -> None:
         windows[name] = component_scores[:, index]
     windows["asi_eeg"] = asi
 
-    thal_windows, gat_metrics = cross_validated_thal(metadata, node_features, args.seed, args.splits)
+    thal_windows, gat_metrics = cross_validated_thal(metadata, node_features, args.seed, splits)
     thal_windows = thal_windows.merge(
         windows[["subject", "condition", "window", "asi_eeg"]],
         on=["subject", "condition", "window"],
         how="left",
         validate="one_to_one",
     )
-    thal_windows["asi_projected"] = np.clip(
-        thal_windows["asi_eeg"] - 0.15 * thal_windows["relay_penalty"], 0.0, 1.0
-    )
+    thal_windows["asi_projected"] = np.clip(thal_windows["asi_eeg"] - 0.15 * thal_windows["relay_penalty"], 0.0, 1.0)
 
     subject_condition = windows.groupby(["subject", "condition"], as_index=False)[
         component_names + ["asi_eeg"]
@@ -500,17 +517,18 @@ def main() -> None:
 
     wide = subject_condition.pivot(index="subject", columns="condition")
     rng = np.random.default_rng(args.seed)
-    summary: dict[str, object] = {
+    summary: dict[str, Any] = {
         "design": {
-            "subjects": 48,
-            "recordings": 96,
+            "subjects": subject_count,
+            "recordings": len(files),
+            "cv_splits_used": splits,
             "sampling_hz": FS,
             "window_seconds": WINDOW_SECONDS,
             "step_seconds": STEP_SECONDS,
-            "ctx_nodes": 14,
-            "measured_channel_nodes": 14,
+            "ctx_nodes": len(CHANNELS),
+            "measured_channel_nodes": len(CHANNELS),
             "regional_composite_nodes": 0,
-            "thal_neighbors": 14,
+            "thal_neighbors": len(CHANNELS),
             "thal_status": "latent GAT readout; not measured thalamic EEG",
             "baseline": "within-subject rest median and MAD",
         },
@@ -543,10 +561,8 @@ def main() -> None:
     subject_condition.to_csv(args.output / "subject_condition_metrics.csv", index=False)
     attention_summary.to_csv(args.output / "thal_attention_by_condition.csv", index=False)
     regional_attention_summary.to_csv(args.output / "thal_attention_by_region.csv", index=False)
-    (args.output / "summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    (args.output / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    LOGGER.info("%s", json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

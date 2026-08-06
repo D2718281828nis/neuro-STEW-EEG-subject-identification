@@ -1,6 +1,8 @@
 # STEW ASI + latent THAL attention model
 
-This folder contains a verified experiment that runs on the local STEW dataset in this repository.
+This folder contains a cross-validated rest-vs-high-workload experiment that runs on
+the local STEW dataset in this repository. Window/step duration and channel/band
+definitions are shared with the other two pipelines via the root `eeg_config.py`.
 
 ## What it does
 
@@ -8,24 +10,44 @@ This folder contains a verified experiment that runs on the local STEW dataset i
 - extracts per-window band-power and phase features
 - computes a subject-level rest-normalized ASI-EEG index
 - fits a latent THAL graph-attention readout over the 14 measured CTX nodes
-- evaluates rest vs high workload with paired statistics and cross-validated classification
+- evaluates rest vs high workload with paired statistics and subject-grouped
+  cross-validated classification (`sklearn.model_selection.GroupKFold`, keyed by
+  subject id, so a subject's windows never split across train and test)
 
 ## Run
 
+From the repository root:
+
 ```bash
-cd /Users/denmacair/Documents/code_base/neuro-STEW-EEG-subject-identification
-python Model/stew_asi_gat_experiment.py --dataset dataset --output Model/results --bootstrap 200
+python "Model GAT/stew_asi_gat_experiment.py" --dataset dataset --output "Model GAT/results" --bootstrap 200
 ```
+
+Useful CLI options (see `--help` for the full list): `--seed`, `--splits` (subject-grouped
+CV folds, auto-reduced with a warning if fewer subjects are available), `--bootstrap`.
 
 The run produces files such as:
 
-- `Model/results/summary.json`
-- `Model/results/ctx_node_mapping.csv`
-- `Model/results/subject_condition_metrics.csv`
+- `Model GAT/results/summary.json`
+- `Model GAT/results/ctx_node_mapping.csv`
+- `Model GAT/results/subject_condition_metrics.csv`
+- `Model GAT/results/window_asi.csv`
+- `Model GAT/results/thal_cross_validated_windows.csv`
+
+## Evaluation methodology
+
+The `gat_condition_classifier` metrics in `summary.json` come from `GroupKFold`
+cross-validation over windows, grouped by subject, reported at both window level
+(`window_accuracy`, `window_auc`) and recording level (`recording_accuracy`,
+`recording_auc`, computed from the median predicted probability per recording). The
+paired rest-vs-high statistics (Wilcoxon signed-rank test, bootstrap CIs, rank-biserial
+effect size) are computed at the subject level from within-subject medians.
 
 ## Important note
 
-This model is intentionally a sensor-space EEG model. `THAL` is a latent attention node used for modeling and not a measured thalamic signal.
+This model is intentionally a sensor-space EEG model. `THAL` is a latent attention node
+used for modeling and not a measured thalamic signal. Reported classifier metrics
+reflect cross-validated performance on this STEW cohort; they are not evidence of
+external validity on other datasets or populations.
 
 ## Figure caption block (paper-ready)
 
