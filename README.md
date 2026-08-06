@@ -1,4 +1,4 @@
-# STEW EEG Subject Identification and Graph Dynamics Modeling
+﻿# STEW EEG Subject Identification and Graph Dynamics Modeling
 
 This repository explores three complementary modeling approaches for the STEW EEG workload dataset:
 
