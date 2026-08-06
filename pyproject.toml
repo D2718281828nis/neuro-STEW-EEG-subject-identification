@@ -43,7 +43,7 @@ build-backend = "setuptools.build_meta"
 py-modules = ["eeg_config"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "Model Simple KuramoroGNN-GRAND/tests"]
 markers = [
     "slow: reduced synthetic end-to-end smoke test that runs a full pipeline",
 ]

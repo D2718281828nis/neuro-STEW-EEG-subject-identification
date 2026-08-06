@@ -1,4 +1,4 @@
-﻿# STEW EEG Subject Identification and Graph Dynamics Modeling
+# STEW EEG Subject Identification and Graph Dynamics Modeling
 
 This repository explores three complementary modeling approaches for the STEW EEG workload dataset:
 
@@ -33,6 +33,7 @@ Sampling frequency: 128 Hz.
 - `dataset/` — raw STEW EEG files + rating metadata.
 - `Model GAT/` — latent graph-attention experiment using sensor-space EEG features and ASI-EEG.
 - `Model KuramotoGNN/` — diffusion and phase-coupled oscillator modeling, including STEW-based dynamics evaluation.
+- `Model Simple KuramoroGNN-GRAND/` — educational demonstration of Kuramoto oscillators and GRAND diffusion on a three-node synthetic graph.
 - `Model Subject Ident/` — subject identification pipeline built from statistical and entropy-derived EEG features.
 
 ## Model descriptions
@@ -92,6 +93,34 @@ Expected outputs include:
 - representation analysis: `pca_features.png`
 - graph visualizations: `networkx_graph_visulisation.png`, `node_connectivity_heatmap.png`
 - classification heatmaps in `Model KuramotoGNN/test_output/`
+
+### Model Simple KuramoroGNN-GRAND
+
+`Model Simple KuramoroGNN-GRAND/` is an **educational demonstration** that illustrates two fundamental graph-based dynamical systems on a simple three-node synthetic graph:
+
+1. **Kuramoto oscillators**: Phase-coupled oscillators that synchronize through graph edges
+2. **GRAND diffusion**: Linear graph diffusion that smooths node features
+
+This model emphasizes **pedagogical clarity** over scientific realism. It uses a synthetic three-node graph with configurable edge weights to demonstrate:
+
+- Graph construction and adjacency matrix validation
+- Node states (phases vs features) and their mathematical meaning
+- Message passing patterns in both systems
+- Continuous-time graph dynamics via explicit Euler and RK4 integration
+- Synchronization metrics (Kuramoto order parameter)
+- Smoothing metrics (feature variance, Dirichlet energy)
+- The connection between both systems and continuous-depth GNNs
+
+**Key difference from Model KuramotoGNN**: This is purely synthetic and educational, while Model KuramotoGNN applies these concepts to real STEW EEG data for classification.
+
+Run the educational demonstration from the repository root:
+
+```bash
+python "Model Simple KuramoroGNN-GRAND/simple_kuramoto_grand.py" --help
+python "Model Simple KuramoroGNN-GRAND/simple_kuramoto_grand.py" --quick
+```
+
+Expected outputs include 14 educational plots (PNG files), JSON summary, and CSV trajectories in the specified output directory.
 
 ### Model Subject Ident
 
