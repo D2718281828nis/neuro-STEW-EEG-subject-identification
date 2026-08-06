@@ -1,12 +1,11 @@
-import numpy as np
-import networkx as nx
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score, confusion_matrix, ConfusionMatrixDisplay, RocCurveDisplay
-from sklearn.model_selection import train_test_split
+import networkx as nx
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+from sklearn.metrics import ConfusionMatrixDisplay, RocCurveDisplay, confusion_matrix, roc_auc_score
+from sklearn.model_selection import train_test_split
 
 
 class KuramotoGNN(nn.Module):
@@ -45,7 +44,7 @@ def build_synthetic_kuramoto_graph(num_nodes: int, edge_prob: float = 0.2, seed:
 
     # Labels encode whether the node's phase is in the upper half of the circle.
     labels = (phases > np.pi).astype(int)
-    nx.set_node_attributes(G, {i: {'feature': features[i], 'label': int(labels[i])} for i in G.nodes})
+    nx.set_node_attributes(G, {i: {"feature": features[i], "label": int(labels[i])} for i in G.nodes})
     return G, features.astype(np.float32), labels.astype(np.int64)
 
 
@@ -57,16 +56,16 @@ def graph_to_adj_matrix(G: nx.Graph) -> np.ndarray:
     return adj / degree
 
 
-def plot_graph(G: nx.Graph, path: str = 'graph_visualization.png'):
+def plot_graph(G: nx.Graph, path: str = "graph_visualization.png"):
     """Visualize the network structure using networkx and matplotlib."""
     pos = nx.spring_layout(G, seed=123)
-    labels = nx.get_node_attributes(G, 'label')
+    labels = nx.get_node_attributes(G, "label")
     plt.figure(figsize=(8, 8))
-    nx.draw_networkx_nodes(G, pos, node_size=300, node_color=list(labels.values()), cmap='coolwarm', vmin=0, vmax=1)
+    nx.draw_networkx_nodes(G, pos, node_size=300, node_color=list(labels.values()), cmap="coolwarm", vmin=0, vmax=1)
     nx.draw_networkx_edges(G, pos, alpha=0.5)
     nx.draw_networkx_labels(G, pos, font_size=8)
-    plt.title('Synthetic Kuramoto-inspired Graph')
-    plt.axis('off')
+    plt.title("Synthetic Kuramoto-inspired Graph")
+    plt.axis("off")
     plt.tight_layout()
     plt.savefig(path)
     plt.close()
@@ -84,7 +83,7 @@ def train_model(model, features_tensor, adj_tensor, labels_tensor, train_idx, de
         loss.backward()
         optimizer.step()
         if (epoch + 1) % 10 == 0:
-            print(f'Epoch {epoch + 1:02d} loss: {loss.item():.4f}')
+            print(f"Epoch {epoch + 1:02d} loss: {loss.item():.4f}")
 
 
 def evaluate_model(model, features_tensor, adj_tensor, labels_tensor, eval_idx, device):
@@ -98,11 +97,11 @@ def evaluate_model(model, features_tensor, adj_tensor, labels_tensor, eval_idx, 
 
 
 def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     G, features, labels = build_synthetic_kuramoto_graph(num_nodes=100, edge_prob=0.15)
-    print('Graph nodes:', G.number_of_nodes(), 'edges:', G.number_of_edges())
-    plot_graph(G, path='Model KuramotoGNN/kuramoto_graph.png')
+    print("Graph nodes:", G.number_of_nodes(), "edges:", G.number_of_edges())
+    plot_graph(G, path="Model KuramotoGNN/kuramoto_graph.png")
 
     adj_matrix = graph_to_adj_matrix(G)
     adj_tensor = torch.from_numpy(adj_matrix).to(device)
@@ -121,26 +120,29 @@ def main():
     y_pred = (y_scores >= 0.5).astype(int)
     auc_score = roc_auc_score(y_true, y_scores)
     cm = confusion_matrix(y_true, y_pred)
-    print(f'Test ROC-AUC: {auc_score:.4f}')
-    print('Confusion matrix:\n', cm)
+    print(f"Test ROC-AUC: {auc_score:.4f}")
+    print("Confusion matrix:\n", cm)
 
     plt.figure(figsize=(6, 6))
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[0, 1])
-    disp.plot(cmap='Blues', values_format='d')
-    plt.title('Confusion Matrix')
+    disp.plot(cmap="Blues", values_format="d")
+    plt.title("Confusion Matrix")
     plt.tight_layout()
-    plt.savefig('Model KuramotoGNN/confusion_matrix.png')
+    plt.savefig("Model KuramotoGNN/confusion_matrix.png")
     plt.close()
 
     fig, ax = plt.subplots(figsize=(6, 6))
     RocCurveDisplay.from_predictions(y_true, y_scores, ax=ax)
-    ax.set_title('ROC Curve')
+    ax.set_title("ROC Curve")
     plt.tight_layout()
-    plt.savefig('Model KuramotoGNN/roc_curve.png')
+    plt.savefig("Model KuramotoGNN/roc_curve.png")
     plt.close()
 
-    print('Saved plots to Model KuramotoGNN/kuramoto_graph.png, Model KuramotoGNN/confusion_matrix.png, Model KuramotoGNN/roc_curve.png')
+    print(
+        "Saved plots to Model KuramotoGNN/kuramoto_graph.png, "
+        "Model KuramotoGNN/confusion_matrix.png, Model KuramotoGNN/roc_curve.png"
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

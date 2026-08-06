@@ -1,490 +1,563 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
+"""Classical EEG subject-identification pipeline with modular preprocessing and evaluation.
 
+The script loads STEW EEG recordings, segments them into overlapping windows,
+extracts per-window statistical, spectral, entropy, and fractal features, trains an
+artificial neural network to predict subject identity from windows, and writes
+evaluation metrics and plots.
+
+Train/validation/test partitions are disjoint temporal blocks within each subject
+(not leave-subject-out, since subject identity is the prediction target), so
+overlapping or adjacent windows cannot cross a partition boundary.
 """
-## Version history:
 
-2021, May:
-	Author: Tanveer Khan
-"""
+from __future__ import annotations
 
-import pandas as pd
-import numpy as np
-from numpy import mean
-from numpy import std
+import argparse
+import json
+import logging
+import re
+import sys
+from dataclasses import asdict, dataclass
+from importlib.metadata import version
+from pathlib import Path
+from typing import Any
+
+import antropy as an
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import scipy.io
-import scipy.signal
-from scipy.signal import butter,filtfilt,find_peaks,find_peaks, resample
-from scipy import stats
-from scipy.stats import skew, kurtosis
-from sklearn import preprocessing
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report,confusion_matrix,accuracy_score
-from sklearn.metrics import roc_curve,auc, precision_score,recall_score,f1_score
-from sklearn.feature_selection import SelectKBest, chi2
-from sklearn.ensemble import ExtraTreesClassifier
+import numpy as np
+import pandas as pd
 from keras import layers, models, regularizers
-import mne
-from mne import find_events, fit_dipole
-from autoreject import AutoReject
-import seaborn as sns
-import sys
-import statistics as st
 from keras.utils import to_categorical
-#import pywt
-import sys
-import antropy as an 
-import time
+from scipy.signal import butter, filtfilt, welch
+from scipy.stats import kurtosis, skew
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.preprocessing import StandardScaler
 
-import warnings
-warnings.filterwarnings("ignore")
+# Running this file directly (`python "Model Subject Ident/stewSubjectsIdentification.py"`)
+# puts this file's own directory on sys.path[0], not the repo root, so the shared
+# eeg_config module at the repo root would not otherwise be importable.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from eeg_config import CHANNELS, FS, STEP_SECONDS, WINDOW_SAMPLES, set_seed  # noqa: E402
+
+LOGGER = logging.getLogger(__name__)
+
+# Antropy's spectral_entropy takes an explicit sampling-frequency argument that the
+# original pipeline set to 100 (not the true 128 Hz acquisition rate). Preserved here
+# to keep the feature definition identical rather than silently changing its scale.
+SPECTRAL_ENTROPY_SF = 100
+
+FEATURE_COLUMNS = [
+    "mean_psd",
+    "std_psd",
+    "amp_mean",
+    "amp_std",
+    "amp_var",
+    "amp_range",
+    "amp_skew",
+    "amp_kurtosis",
+    "perm_entropy",
+    "spectral_entropy",
+    "svd_entropy",
+    "approx_entropy",
+    "sample_entropy",
+    "petrosian_fd",
+    "katz_fd",
+    "higuchi_fd",
+    "detrended_fluctuation",
+]
 
 
-Channels = ["AF3", "F7", "F3", "FC5", "T7", "P7", "O1", "O2", "P8", "T8", "FC6", "F4", "F8", "AF4"]   
+@dataclass(frozen=True)
+class WindowMetadata:
+    """Metadata attached to every extracted EEG window."""
 
-##1.1 Filter requirements.
-T =     150         # Sample Period,    Seconds
-fs =    128         # Sample rate,      Hz
-cutoff = 40          # Desired cutoff frequency of the filter, Hz
-nyq = 0.5 * fs      # Nyquist Frequency
-order = 1           # sin wave can be approx represented as quadratic
-n = int(T * fs)+1   # Total number of samples
-
-t=np.linspace(0,150,19200)
+    subject_id: int
+    condition: str
+    recording_id: str
+    window_index: int
+    start_time: float
 
 
-"""
+def configure_logging() -> None:
+    """Configure process-wide logging to stderr."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-************* ONE TIME EXECUTION OF THIS SECTION CODE TO PREPARE FEATURES ***************
+
+def resolve_path(path_value: str | Path, *, repo_root: Path) -> Path:
+    """Resolve a CLI path relative to the repository root when it is not absolute."""
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return (repo_root / path).resolve()
 
 
-Features = ["mean_PSD",         "STD_PSD",
-            "A_mean",           "A_STD",            "A_Var",
-            "A_range",          "A_skew",           "A_kurtosis",
-            "Permutation_E",    "Spectral_E",       "SVD_E",
-            "Approximate_E",    "Sample_E",         "Petrosian_FD",
-            "Katz_FD",          "Higuchi_FD",       
-            "Detrended fluctuation analysis",
-            "Label"] 
-                              # Features' Names
+def load_recordings(dataset_dir: Path) -> list[Path]:
+    """Return every STEW recording file, validating that each subject has both conditions."""
+    files = sorted(dataset_dir.glob("sub??_*.txt"))
+    if not files:
+        raise ValueError(f"No EEG recordings found in {dataset_dir}")
 
-Features_df = pd.DataFrame(columns = Features)    # Features of Subject 1
+    subject_ids = sorted({int(path.stem[3:5]) for path in files})
+    for subject_id in subject_ids:
+        rest_files = [p for p in files if p.name.startswith(f"sub{subject_id:02d}_") and "_lo" in p.name]
+        high_files = [p for p in files if p.name.startswith(f"sub{subject_id:02d}_") and "_hi" in p.name]
+        if not rest_files or not high_files:
+            raise ValueError(f"Subject {subject_id} is missing a rest or high-workload recording")
 
-normal_cutoff = [3/nyq ,40/nyq]
-b, a = butter(order, normal_cutoff, btype='bandpass', analog=False)    # Get the filter coefficients
-SS=0
-TIMES = np.zeros([48])
+    return files
 
-# Read Data
-start_time = time.time()
-for s in range(1,49):
-    if s < 10:
-        URL=".\\STEW Dataset\\sub0"+str(s)+"_hi.txt"
+
+def preprocess_signal(signal_values: np.ndarray) -> np.ndarray:
+    """Bandpass-filter and despike a whole recording, per channel.
+
+    Mirrors the original pipeline: a first-order 3-40 Hz Butterworth bandpass
+    (zero-phase), followed by two-stage despiking that replaces samples above the
+    97th percentile of the filtered signal with its mean, then samples below the
+    5th percentile of that result with its own mean.
+
+    Args:
+        signal_values: Array of shape (samples, channels).
+
+    Returns:
+        Despiked, filtered array of the same shape, dtype float32.
+    """
+    data = np.asarray(signal_values, dtype=np.float64)
+    if data.ndim != 2 or data.shape[1] != len(CHANNELS):
+        raise ValueError(f"Expected a shape (samples, {len(CHANNELS)}) array, got {data.shape}")
+
+    nyquist = 0.5 * FS
+    normal_cutoff = [3.0 / nyquist, 40.0 / nyquist]
+    b, a = butter(1, normal_cutoff, btype="bandpass", analog=False)
+
+    despiked = np.empty_like(data)
+    for channel_index in range(data.shape[1]):
+        filtered = filtfilt(b, a, data[:, channel_index])
+        high_threshold = np.quantile(filtered, 0.97)
+        stage_one = np.where(filtered < high_threshold, filtered, filtered.mean())
+        low_threshold = np.quantile(stage_one, 0.05)
+        stage_two = np.where(stage_one > low_threshold, stage_one, stage_one.mean())
+        despiked[:, channel_index] = stage_two
+
+    return despiked.astype(np.float32)
+
+
+def segment_recording(
+    signal_values: np.ndarray,
+    *,
+    window_seconds: float,
+    step_seconds: float,
+) -> list[np.ndarray]:
+    """Create complete, non-truncated overlapping windows from one recording.
+
+    Returns a list of window arrays with shape (window_samples, channels). Any
+    trailing partial window is dropped rather than silently truncated.
+    """
+    window_samples = int(round(window_seconds * FS))
+    step_samples = int(round(step_seconds * FS))
+    if window_samples <= 0 or step_samples <= 0:
+        raise ValueError("Window and step sizes must be positive")
+    if signal_values.shape[0] < window_samples:
+        raise ValueError(f"Recording is shorter than one window: {signal_values.shape[0]} < {window_samples}")
+
+    starts = np.arange(0, signal_values.shape[0] - window_samples + 1, step_samples)
+    return [signal_values[start : start + window_samples] for start in starts]
+
+
+def extract_window_features(window: np.ndarray) -> np.ndarray:
+    """Compute the 17 channel-averaged EEG features for one window.
+
+    Args:
+        window: Array of shape (window_samples, channels).
+
+    Returns:
+        1-D array of length ``len(FEATURE_COLUMNS)`` with each feature averaged
+        across channels, matching the original pipeline's channel-aggregation step.
+    """
+    features_per_channel: list[np.ndarray] = []
+    for channel_values in window.T:
+        f, power = welch(channel_values, fs=FS)
+        mask = (f >= 1.0) & (f <= 45.0)
+        psd = power[mask]
+        features_per_channel.append(
+            np.array(
+                [
+                    float(np.mean(psd)),
+                    float(np.std(psd)),
+                    float(np.mean(channel_values)),
+                    float(np.std(channel_values)),
+                    float(np.var(channel_values)),
+                    float(np.ptp(channel_values)),
+                    float(skew(channel_values)),
+                    float(kurtosis(channel_values)),
+                    float(an.perm_entropy(channel_values, order=3, normalize=True)),
+                    float(an.spectral_entropy(channel_values, SPECTRAL_ENTROPY_SF, method="welch", normalize=True)),
+                    float(an.svd_entropy(channel_values, order=3, delay=1, normalize=True)),
+                    float(an.app_entropy(channel_values, order=2, metric="chebyshev")),
+                    float(an.sample_entropy(channel_values, order=2, metric="chebyshev")),
+                    float(an.petrosian_fd(channel_values)),
+                    float(an.katz_fd(channel_values)),
+                    float(an.higuchi_fd(channel_values, kmax=10)),
+                    float(an.detrended_fluctuation(channel_values)),
+                ],
+                dtype=np.float64,
+            )
+        )
+    return np.mean(np.stack(features_per_channel, axis=0), axis=0)
+
+
+def extract_features_from_recordings(
+    recordings: list[Path],
+    *,
+    window_seconds: float,
+    step_seconds: float,
+) -> pd.DataFrame:
+    """Extract one feature row per window across a collection of recordings."""
+    rows: list[dict[str, Any]] = []
+    for recording_path in recordings:
+        match = re.fullmatch(r"sub(\d{2})_(lo|hi)\.txt", recording_path.name)
+        if not match:
+            raise ValueError(f"Unexpected filename format: {recording_path.name}")
+        subject_id = int(match.group(1)) - 1
+        condition = "rest" if match.group(2) == "lo" else "high"
+        data = np.loadtxt(recording_path)
+        if data.ndim != 2 or data.shape[1] != len(CHANNELS):
+            raise ValueError(f"Unexpected shape in {recording_path}: {data.shape}")
+        processed = preprocess_signal(data)
+        windows = segment_recording(processed, window_seconds=window_seconds, step_seconds=step_seconds)
+        LOGGER.info("Extracting features for %s (%d windows)", recording_path.name, len(windows))
+        for window_index, window in enumerate(windows):
+            metadata = WindowMetadata(
+                subject_id=subject_id,
+                condition=condition,
+                recording_id=recording_path.name,
+                window_index=window_index,
+                start_time=float(window_index * step_seconds),
+            )
+            features = extract_window_features(window)
+            rows.append(
+                {
+                    **asdict(metadata),
+                    "label": subject_id,
+                    **{column: features[index] for index, column in enumerate(FEATURE_COLUMNS)},
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def load_feature_table(feature_csv: Path) -> pd.DataFrame:
+    """Load a previously extracted feature table from disk."""
+    if not feature_csv.exists():
+        raise FileNotFoundError(f"Feature CSV not found: {feature_csv}")
+    return pd.read_csv(feature_csv)
+
+
+def save_feature_table(feature_table: pd.DataFrame, path: Path) -> None:
+    """Persist the feature table to disk as CSV."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    feature_table.to_csv(path, index=False)
+
+
+def split_temporal_blocks(
+    feature_table: pd.DataFrame, *, split_count: int = 3
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Split each subject's windows into contiguous temporal blocks for train/validation/test.
+
+    Because subject identity is the classification target, leave-subject-out
+    validation is not applicable here. Instead every subject contributes disjoint,
+    time-ordered blocks of its own windows to each partition, so overlapping or
+    adjacent windows never cross a partition boundary.
+    """
+    if split_count < 3:
+        raise ValueError("split_count must be at least 3")
+
+    train_rows: list[pd.DataFrame] = []
+    validation_rows: list[pd.DataFrame] = []
+    test_rows: list[pd.DataFrame] = []
+    for subject_id in sorted(feature_table["subject_id"].unique()):
+        subject_rows = (
+            feature_table.loc[feature_table["subject_id"] == subject_id]
+            .sort_values(["window_index", "start_time"])
+            .copy()
+        )
+        if len(subject_rows) < split_count:
+            raise ValueError(
+                f"Subject {subject_id} has fewer than {split_count} windows; "
+                "temporal-block validation requires at least split_count windows per subject"
+            )
+        blocks = np.array_split(subject_rows.index.to_numpy(), split_count)
+        train_rows.append(subject_rows.loc[blocks[0]])
+        validation_rows.append(subject_rows.loc[blocks[1]])
+        test_rows.append(pd.concat([subject_rows.loc[block] for block in blocks[2:]], axis=0))
+
+    return (
+        pd.concat(train_rows, axis=0).reset_index(drop=True),
+        pd.concat(validation_rows, axis=0).reset_index(drop=True),
+        pd.concat(test_rows, axis=0).reset_index(drop=True),
+    )
+
+
+def build_classifier(n_features: int, n_classes: int) -> models.Sequential:
+    """Construct the subject-identification ANN.
+
+    Architecture mirrors the original pipeline: four ReLU hidden layers (200, 150,
+    100, 75 units, L1-regularized first layer) feeding a softmax output over
+    subjects, trained with Adam and categorical cross-entropy.
+    """
+    classifier = models.Sequential(
+        [
+            layers.Input(shape=(n_features,)),
+            layers.Dense(200, activation="relu", kernel_regularizer=regularizers.l1(0.01)),
+            layers.Dense(150, activation="relu"),
+            layers.Dense(100, activation="relu"),
+            layers.Dense(75, activation="relu"),
+            layers.Dense(n_classes, activation="softmax"),
+        ]
+    )
+    classifier.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
+    return classifier
+
+
+def train_and_evaluate(
+    train_frame: pd.DataFrame,
+    validation_frame: pd.DataFrame,
+    test_frame: pd.DataFrame,
+    *,
+    seed: int,
+    epochs: int,
+    batch_size: int,
+) -> dict[str, Any]:
+    """Fit the ANN on the training blocks and evaluate on validation and test partitions.
+
+    Scaling is fit on the training partition only and applied to validation/test to
+    avoid leaking their statistics into the model.
+    """
+    set_seed(seed)
+    feature_columns = [column for column in FEATURE_COLUMNS if column in train_frame.columns]
+    n_classes = int(pd.concat([train_frame["label"], validation_frame["label"], test_frame["label"]]).nunique())
+
+    scaler = StandardScaler()
+    train_features = scaler.fit_transform(train_frame[feature_columns].to_numpy())
+    validation_features = scaler.transform(validation_frame[feature_columns].to_numpy())
+    test_features = scaler.transform(test_frame[feature_columns].to_numpy())
+
+    train_labels = train_frame["label"].to_numpy()
+    validation_labels = validation_frame["label"].to_numpy()
+    test_labels = test_frame["label"].to_numpy()
+
+    classifier = build_classifier(n_features=len(feature_columns), n_classes=n_classes)
+    LOGGER.info("Training classifier: %d train windows, %d epochs, batch size %d", len(train_frame), epochs, batch_size)
+    history = classifier.fit(
+        train_features,
+        to_categorical(train_labels, num_classes=n_classes),
+        validation_data=(validation_features, to_categorical(validation_labels, num_classes=n_classes)),
+        epochs=epochs,
+        batch_size=batch_size,
+        verbose=0,
+    )
+
+    validation_predictions = np.argmax(classifier.predict(validation_features, verbose=0), axis=1)
+    test_predictions = np.argmax(classifier.predict(test_features, verbose=0), axis=1)
+
+    metrics = {
+        "validation": _classification_metrics(validation_labels, validation_predictions),
+        "test": _classification_metrics(test_labels, test_predictions),
+    }
+    return {"metrics": metrics, "feature_columns": feature_columns, "history": history.history}
+
+
+def _classification_metrics(labels: np.ndarray, predictions: np.ndarray) -> dict[str, Any]:
+    """Compute window-level classification metrics with scikit-learn."""
+    return {
+        "accuracy": float(accuracy_score(labels, predictions)),
+        "precision_macro": float(precision_score(labels, predictions, average="macro", zero_division=0)),
+        "recall_macro": float(recall_score(labels, predictions, average="macro", zero_division=0)),
+        "f1_macro": float(f1_score(labels, predictions, average="macro", zero_division=0)),
+        "confusion_matrix": confusion_matrix(labels, predictions).tolist(),
+    }
+
+
+def save_plots_and_metrics(output_dir: Path, evaluation: dict[str, Any]) -> None:
+    """Persist training curves, confusion matrices, and a metrics summary."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    metrics = evaluation["metrics"]
+    history = evaluation["history"]
+
+    if "accuracy" in history and "val_accuracy" in history:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(history["accuracy"], label="training acc")
+        ax.plot(history["val_accuracy"], label="validation acc")
+        ax.set_title("Training and validation accuracy")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Accuracy")
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(output_dir / "training_validation_acc.png")
+        plt.close(fig)
+
+    if "loss" in history and "val_loss" in history:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(history["loss"], label="training loss")
+        ax.plot(history["val_loss"], label="validation loss")
+        ax.set_title("Training and validation loss")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(output_dir / "training_validation_loss.png")
+        plt.close(fig)
+
+    cm = np.array(metrics["test"]["confusion_matrix"])
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.imshow(cm, cmap="Blues")
+    ax.set_title("Confusion matrix (test)")
+    ax.set_xlabel("Predicted subject")
+    ax.set_ylabel("True subject")
+    fig.tight_layout()
+    fig.savefig(output_dir / "confusion_matrix.png")
+    plt.close(fig)
+
+    metrics_summary = {
+        split_name: {key: value for key, value in metrics[split_name].items() if key != "confusion_matrix"}
+        for split_name in metrics
+    }
+    (output_dir / "metrics.json").write_text(json.dumps(metrics_summary, indent=2), encoding="utf-8")
+
+
+def build_summary(
+    *,
+    args: argparse.Namespace,
+    dataset_files: list[Path],
+    feature_table: pd.DataFrame,
+    metrics: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a machine-readable summary for the experiment."""
+    dependency_versions = {
+        "numpy": version("numpy"),
+        "pandas": version("pandas"),
+        "scipy": version("scipy"),
+        "scikit-learn": version("scikit-learn"),
+        "matplotlib": version("matplotlib"),
+        "antropy": version("antropy"),
+        "keras": version("keras"),
+    }
+    return {
+        "cli_arguments": {
+            "dataset_dir": str(args.dataset_dir),
+            "feature_csv": str(args.feature_csv),
+            "output_dir": str(args.output_dir),
+            "seed": args.seed,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "extract_features": args.extract_features,
+            "window_size": args.window_size,
+            "step_size": args.step_size,
+            "split_count": args.split_count,
+        },
+        "seed": args.seed,
+        "dataset_file_count": len(dataset_files),
+        "subject_count": int(feature_table["subject_id"].nunique()),
+        "window_count": int(len(feature_table)),
+        "dependency_versions": dependency_versions,
+        "evaluation_metrics": metrics,
+    }
+
+
+def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
+    """Run the subject-identification workflow end to end."""
+    repo_root = Path(__file__).resolve().parents[1]
+    dataset_dir = resolve_path(args.dataset_dir, repo_root=repo_root)
+    feature_csv = resolve_path(args.feature_csv, repo_root=repo_root)
+    output_dir = resolve_path(args.output_dir, repo_root=repo_root)
+
+    if args.epochs <= 0:
+        raise ValueError("epochs must be > 0")
+    if args.batch_size <= 0:
+        raise ValueError("batch_size must be > 0")
+    if args.window_size <= 0:
+        raise ValueError("window_size must be > 0")
+    if args.step_size <= 0:
+        raise ValueError("step_size must be > 0")
+    if args.split_count < 3:
+        raise ValueError("split_count must be at least 3")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    set_seed(args.seed)
+
+    if args.extract_features:
+        dataset_files = load_recordings(dataset_dir)
+        feature_table = extract_features_from_recordings(
+            dataset_files, window_seconds=args.window_size, step_seconds=args.step_size
+        )
+        save_feature_table(feature_table, feature_csv)
     else:
-        URL=".\\STEW Dataset\\sub"+str(s)+"_hi.txt"
-
-    Data = pd.read_csv(URL, sep="  ", header=None)
-    Data.columns=Channels
-    print("Extracting Features From Subject: ",s)
-    print("--- %s seconds ---" % (time.time() - start_time))
-    TIMES[s-1] = time.time() - start_time
-
-    for Ch in Channels:
-        # Pre-Processing
-        Data.insert(0, ''.join([Ch + " Filtered"]), filtfilt(b,a,Data[Ch]))
-        Data = Data.drop(Ch, axis=1)
-        Data.insert(0, ''.join([Ch + " Despiked"]), Data[''.join([Ch + " Filtered"])].where(Data[''.join([Ch + " Filtered"])] < Data[''.join([Ch + " Filtered"])].quantile(0.97), Data[''.join([Ch + " Filtered"])].mean()))
-        Data = Data.drop(''.join([Ch + " Filtered"]), axis=1)
-        Data.insert(0, Ch, Data[''.join([Ch + " Despiked"])].where(Data[''.join([Ch + " Despiked"])] > Data[''.join([Ch + " Despiked"])].quantile(0.05), Data[''.join([Ch + " Despiked"])].mean()))
-        Data = Data.drop(''.join([Ch + " Despiked"]), axis=1)
-    w=0
-    for window in range(0,60):
-        EEG_Window = Data[w:w+640] # Windowing, Window Len: 5 Sec, Overlap: 2.5 Sec
-        w=w+320
-        Fet = np.zeros([300]) #Temporal Features + Lable array
-        Fet_ch = np.zeros([18])
-        i=0
-        for i in range(14):
-            channel = EEG_Window[Channels[i]]
-            # Feature Extraction
-   
-
-            # PSD Features
-            f, Pxx =scipy.signal.welch(channel,fs) #Extract PSD according to Welch thiorem
-
-            Fet[i]         = mean(Pxx)                                                      # Mean of PSD
-        
-            Fet[i+14]       = std(Pxx)                                                      # Standered Deviation of PSD
-        
-            # Statistics Features
-            Fet[i+28]      = mean(channel)                                                  # Amplitude Mean
-        
-            Fet[i+42]      = std(channel)                                                   # Amplitude Standered Deviation
-            
-            Fet[i+56]      = np.var(channel)                                                # Amplitude variance
-            
-            Fet[i+70]      = max(channel)-min(channel)                                      # Amplitude Range
-            
-            Fet[i+84]      = skew(channel)                                                  # Amplitude Skew
-            
-            Fet[i+98]      = kurtosis(channel)                                              # Amplitude kurtosis
-            
-            # Entropy Features
-            Fet[i+112]      = an.perm_entropy(channel, order=3, normalize=True)                 # Permutation entropy
-            
-            Fet[i+126]      = an.spectral_entropy(channel, 100, method='welch', normalize=True) # Spectral entropy
-            
-            Fet[i+140]      = an.svd_entropy(channel, order=3, delay=1, normalize=True)         # Singular value decomposition entropy
-            
-            Fet[i+154]      = an.app_entropy(channel, order=2, metric='chebyshev')              # Approximate entropy
-            
-            Fet[i+168]      = an.sample_entropy(channel, order=2, metric='chebyshev')           # Sample entropy
-            
-            # Fractal dimension Features
-            Fet[i+182]      = an.petrosian_fd(channel)                                          # Petrosian fractal dimension
-                
-            Fet[i+196]      = an.katz_fd(channel)                                               # Katz fractal dimension
-            
-            Fet[i+210]      = an.higuchi_fd(channel, kmax=10)                                   # Higuchi fractal dimension
-            
-            Fet[i+224]      = an.detrended_fluctuation(channel)                                 # Detrended fluctuation analysis
-            
-        Fet_ch[0]      = mean(Fet[0:14])        # Mean of PSD
-        Fet_ch[1]      = mean(Fet[14:28])       # Standered Deviation of PSD
-        Fet_ch[2]      = mean(Fet[28:42])       # Amplitude Mean
-        Fet_ch[3]      = mean(Fet[42:56])       # Amplitude Standered Deviation
-        Fet_ch[4]      = mean(Fet[56:70])       # Amplitude variance
-        Fet_ch[5]      = mean(Fet[70:84])       # Amplitude Range
-        Fet_ch[6]      = mean(Fet[84:98])       # Amplitude Skew
-        Fet_ch[7]      = mean(Fet[98:112])      # Amplitude kurtosis
-        Fet_ch[8]      = mean(Fet[112:126])     # Permutation entropy
-        Fet_ch[9]      = mean(Fet[126:140])     # Spectral entropy
-        Fet_ch[10]     = mean(Fet[140:154])     # Singular value decomposition entropy
-        Fet_ch[11]     = mean(Fet[154:168])     # Approximate entropy
-        Fet_ch[12]     = mean(Fet[168:182])     # Sample entropy
-        Fet_ch[13]     = mean(Fet[182:196])     # Petrosian fractal dimension
-        Fet_ch[14]     = mean(Fet[196:210])     # Katz fractal dimension
-        Fet_ch[15]     = mean(Fet[210:224])     # Higuchi fractal dimension
-        Fet_ch[16]     = mean(Fet[224:238])     # Detrended fluctuation analysis
-        Fet_ch[17]     = s-1  
-        
-        Features_df.loc[SS]=Fet_ch
-        SS=SS+1
-
-'''
-for i in range(47):
-    TIMES[i] = TIMES[i+1]-TIMES[i]
-print("Mean Feature Extraction Time: ", mean(TIMES[0:47]))
-
-'''
-
-Features_df.to_csv('extractedFeatures.csv')
-
-"""
-
-
-print("All features were extracted and saved")
-
-print("Begining Data Preparation")
-
-Features_df = pd.read_csv('./extractedFeatures.csv')
-Features_df.drop(Features_df.columns[0], axis = 1, inplace = True)      # In the csv file first column has number values from 0-2280 and carries redundadnt info.
-
-#3 Data preparation
-##3.1 Shuffling
-Data = Features_df.sample(frac = 1) 
-features = Data[[x for x in Data.columns if x not in ["Label"]]]   # Data for training
-Labels = Data['Label']                                            # Labels for training
-Labels = Labels.astype('category')
-
-'''
-
-*************** THIS SECTION HAS GRAPH PLOTTING CODE ************************
-
-#4 Feature Selection 
-
-##4.1 Correlation Map
-#print("Plotting Correlation Map\n")
-
-# Correlation Matrix
-Corelation_df = features.corr()
-
-# Continuous Visualization
-plt.imshow(Corelation_df, cmap='hot', interpolation='nearest')
-#plt.show()
-
-
-# Discrete Visualization
-sns.set(font_scale=0.9)
-ax = sns.heatmap(Corelation_df, linewidth=0.5,annot=True)
-#plt.show()
-
-sns.clustermap(data=Corelation_df, annot=True,linewidth=1,cmap = "Accent",annot_kws={"size": 8},)
-#plt.show()
-
-# Scatter Plots
-## Warning: Operating the next line will take a lot of time
-#sns.pairplot(Corelation_df)
-
-print("Corelation map plot done")
-
-'''
-
-'''
-This code having an issue in "Labels" attribute
-print("Show Corelation with label")
-
-features_Corelation = Corelation_df["Label"]
-features_Corelation = features_Corelation[:-1]
-
-features_Corelation_Ordered=abs(features_Corelation.sort_values(ascending =False))
-print(features_Corelation_Ordered)
-
-'''
-
-'''
-#4.2 Univariate Selection
-#apply SelectKBest class to extract top 17 best features
-
-print("Start Univariate Selection" )
-
-bestfeatures = SelectKBest(score_func=chi2, k=17)
-fit = bestfeatures.fit(abs(features),Labels)
-dfscores = pd.DataFrame(fit.scores_)
-dfcolumns = pd.DataFrame(features.columns)
-
-#concat two dataframes for better visualization 
-featureScores = pd.concat([dfcolumns,dfscores],axis=1)
-featureScores.columns = ['Specs','Score']  #naming the dataframe columns
-featureScores = featureScores.set_index('Specs')
-featureScore_Ordered = featureScores.sort_values(by = "Score", ascending =False)
-#print(featureScores.nlargest(17,'Score'))  #print 17 best features
-
-
-
-print("End Univariate Selection" )
-print("Start Feature Importance" )
-
-
-
-##4.3 Feature Importance
-model = ExtraTreesClassifier()
-model.fit(features,Labels)
-
-#print(model.feature_importances_) #use inbuilt class feature_importances of tree based classifiers
-#plot graph of feature importances for better visualization
-
-feat_importances = pd.Series(model.feature_importances_, index=features.columns)
-feat_importances_Ordered = feat_importances.sort_values(ascending =False)
-print(feat_importances_Ordered)
-
-
-
-
-# Plot Bar char for each score
-print("Plot Bar char for each score")
-
-#features_Correlation_Ordered.nlargest(17).plot(kind='bar')
-#plt.show()
-
-featureScore_Ordered.nlargest(17,"Score").plot(kind='bar')
-plt.show()
-
-feat_importances_Ordered.nlargest(17).plot(kind='bar')
-plt.show()
-
-
-# Compare methods
-#Featuers_df = pd.concat([features_Correlation,featureScores, feat_importances], axis=1)
-#Featuers_df.columns = ["Correlation","Score"," Importance"]
-Features_df = pd.concat([featureScores, feat_importances], axis=1)
-Features_df.columns = ["Score"," Importance"]
-
-
-x = Features_df.values #returns a numpy array
-min_max_scaler = preprocessing.MinMaxScaler()
-x_scaled = min_max_scaler.fit_transform(x)
-Featuers_df = pd.DataFrame(x_scaled)
-
-Scores_df = pd.concat([ pd.DataFrame(Features), Features_df], axis=1)
-#Scores_df.columns = ["Features","Correlation","Score","Importance"]
-Scores_df.columns = ["Features","Score","Importance"]
-Scores_df=Scores_df[:-1]
-Scores_df=Scores_df.set_index("Features")
-
-Features_df = pd.concat([ pd.DataFrame(Features), Features_df], axis=1)
-#Features_df.columns = ["Features","Correlation","Score","Importance"]
-Features_df.columns = ["Features","Score","Importance"]
-Features_df=Features_df.set_index("Features")
-Features_df=Features_df[:-1]
-
-
-print("Without Normalization")
-print(Features_df)
-
-ay = sns.heatmap(Features_df, linewidth=0.5,annot=True)
-plt.show()
-
-
-print("With Normalization")
-print(Scores_df)
-ax = sns.heatmap(Scores_df, linewidth=0.5,annot=True)
-plt.show() 
-
-
-
-# Feature Selection
-Reduced_Features = [ "A_Var",
-            "A_kurtosis",
-            "Permutation_E",           
-            "Detrended fluctuation analysis",
-            "Label"] 
-
-Reduced_Data = Data[Reduced_Features]
-
-'''
-
-##3.3 Prepare Train and test Data
-splitRatio = 0.3
-train, test = train_test_split(Data ,test_size=splitRatio,
-                               random_state = 123, shuffle = True)  # Spilt to training and testing data 
-
-train_X = train[[x for x in train.columns if x not in ["Label"]]]   # Data for training
-train_Y = train['Label']                                            # Labels for training
-
-###4.5.2 Testing Data
-test_X = test[[x for x in test.columns if x not in ["Label"]]]     # Data fo testing
-test_Y = test["Label"]                                              # Labels for training
-
-###4.5.3 Validation Data
-x_val = train_X[:200]                                                # 50 Sample for Validation
-partial_x_train = train_X[200:]
-partial_x_train = partial_x_train.values
-
-y_val = train_Y[:200]
-y_val = to_categorical(y_val)
-partial_y_train = train_Y[200:]
-partial_y_train = partial_y_train.values
-partial_y_train = to_categorical(partial_y_train)
-
-print("Data is prepeared")
-
-print("Start Building Classifer")
-
-#4 Classification Model
-
-##4.1 Building Model
-
-###4.1.1 Architecture
-model = models.Sequential()
-model.add(layers.Dense(200, activation = 'relu', input_shape=(17,),kernel_regularizer=regularizers.l1(0.01)))
-#model.add(layers.Dropout(0.3))
-model.add(layers.Dense(150, activation = 'relu'))
-model.add(layers.Dense(100, activation = 'relu'))
-#model.add(layers.Dropout(0.3))
-model.add(layers.Dense(75, activation = 'relu'))
-model.add(layers.Dense(48,  activation= 'softmax'))
-
-####5.1.1.2 Hyper Parameters Tuning
-model.compile(optimizer='Adam',
-              loss='categorical_crossentropy',
-              metrics=['accuracy'])
-
-print("Classifier Bulit\n")
-print("Start Training\n")
-
-##5.1.2 Training Model
-history = model.fit(partial_x_train,
-                    partial_y_train,
-                    epochs = 5,                # initial value = 1000
-                    batch_size = 16,              # initial value = 16
-                    validation_data=(x_val, y_val))
-
-weights = model.get_weights() 
-configs = model.get_config() 
-
-Featuers_weights = np.apply_along_axis(mean, 1, weights[0])
-
-
-
-print("Finish Training")
-
-
-#5 Model Evaluation
-
-##5.1 Network Architecture
-print(model.summary())
-
-print("Start Evaluating Data")
-
-##4.2 Training Process
-history_dict = history.history
-loss_values = history_dict['loss']
-val_loss_values = history_dict['val_loss']
-
-epochs = range(1,len(loss_values)+1)
-plt.figure()
-plt.plot(epochs, loss_values, 'bo', label="training loss", color='r')
-plt.plot(epochs, val_loss_values, 'b', label="validation loss")
-plt.title("Training and Validation Loss")
-plt.xlabel("Epoches")
-plt.ylabel("loss")
-plt.legend()
-plt.show()
-
-acc_values = history_dict['accuracy']
-val_acc_values = history_dict['val_accuracy']
-plt.figure()
-plt.plot(epochs, acc_values, 'bo', label="training acc", color = 'r')
-plt.plot(epochs, val_acc_values, 'b', label="validation acc")
-plt.title("Training and Validation acc")
-plt.xlabel("Epoches")
-plt.ylabel("acc")
-plt.legend()
-plt.show()
-
-##5.3 Prediction
-ANN_predictions = model.predict(test_X)
-
-Pred = np.zeros([len(ANN_predictions)])
-for i in range(0,len(ANN_predictions)):
-    Pred[i] = list(ANN_predictions[i]).index(max(ANN_predictions[i]))
-ANN_Pred = pd.Series(Pred)
-
-####5.1.2.4 Metrics
-print("Accuracy:",accuracy_score(test_Y, ANN_Pred))
-print("f1 score:", f1_score(test_Y, ANN_Pred,average="micro"))
-print("precision score:", precision_score(test_Y, ANN_Pred,average="micro"))
-print("recall score:", recall_score(test_Y, ANN_Pred,average="micro"))
-print("confusion matrix:\n",confusion_matrix(test_Y, ANN_Pred))
-print("classification report:\n", classification_report(test_Y, ANN_Pred))
-
-'''
-results=pd.DataFrame({"Accuracy":accuracy_score(test_Y, ANN_Pred),
-                      "f1 score":f1_score(test_Y, ANN_Pred,average="micro"),
-                      "precision score":precision_score(test_Y, ANN_Pred,average="micro"),
-                      "recall score":recall_score(test_Y, ANN_Pred,average="micro"})
-                     
-results.to_csv("results.csv")
-'''
-##5.6 Plots
-
-####5.1.2.5 Plots
-
-# plot Confusion Matrix as heat map
-plt.figure(figsize=(3,2))
-sns.heatmap(confusion_matrix(test_Y, ANN_Pred),annot=True,fmt = "d",linecolor="k",linewidths=3)
-plt.title("CONFUSION MATRIX",fontsize=20)
-plt.show()
-
-###5.6.2 plot ROC curve
-##test_Y_01 = test_Y_01.cat.codes
-
-#fpr,tpr,thresholds = roc_curve(test_Y, ANN_Pred)
-#plt.subplot(222)
-#plt.plot(fpr,tpr,label = ("Area_under the curve :",auc(fpr,tpr)),color = "r")
-#plt.plot([1,0],[1,0],linestyle = "dashed",color ="k")
-#plt.legend(loc = "best")
-#plt.title("ROC - CURVE & AREA UNDER CURVE",fontsize=15)
-
+        feature_table = load_feature_table(feature_csv)
+        dataset_files = sorted(dataset_dir.glob("sub??_*.txt")) if dataset_dir.exists() else []
+
+    feature_table = feature_table.copy()
+    feature_table["label"] = feature_table["label"].astype(int)
+    feature_table["subject_id"] = feature_table["subject_id"].astype(int)
+    feature_table["window_index"] = feature_table["window_index"].astype(int)
+    feature_table["start_time"] = feature_table["start_time"].astype(float)
+
+    train_frame, validation_frame, test_frame = split_temporal_blocks(feature_table, split_count=args.split_count)
+    evaluation = train_and_evaluate(
+        train_frame, validation_frame, test_frame, seed=args.seed, epochs=args.epochs, batch_size=args.batch_size
+    )
+    save_plots_and_metrics(output_dir, evaluation)
+
+    summary = build_summary(
+        args=args, dataset_files=dataset_files, feature_table=feature_table, metrics=evaluation["metrics"]
+    )
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments for the subject-identification pipeline."""
+    parser = argparse.ArgumentParser(description="Run the STEW EEG subject-identification pipeline")
+    parser.add_argument(
+        "--dataset-dir", type=Path, default=Path("dataset"), help="Directory containing STEW recordings"
+    )
+    parser.add_argument(
+        "--feature-csv",
+        type=Path,
+        default=Path("Model Subject Ident/extractedFeatures.csv"),
+        help="Path for the feature table (read when --extract-features is not set, written otherwise)",
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path("Model Subject Ident/out"), help="Directory for plots and metrics"
+    )
+    parser.add_argument("--seed", type=int, default=123, help="Random seed")
+    parser.add_argument("--epochs", type=int, default=30, help="Number of ANN training epochs")
+    parser.add_argument("--batch-size", type=int, default=16, help="ANN training batch size")
+    parser.add_argument(
+        "--extract-features",
+        action="store_true",
+        help="Re-extract features from the dataset instead of reusing an existing feature CSV",
+    )
+    parser.add_argument("--window-size", type=float, default=WINDOW_SAMPLES / FS, help="Window size in seconds")
+    parser.add_argument("--step-size", type=float, default=STEP_SECONDS, help="Step size in seconds")
+    parser.add_argument(
+        "--split-count",
+        type=int,
+        default=3,
+        help="Number of contiguous temporal blocks per subject (blocks beyond the first two are pooled into test)",
+    )
+    return parser.parse_args(argv)
+
+
+def main() -> None:
+    """Entry point for the subject-identification pipeline."""
+    configure_logging()
+    args = parse_args()
+    summary = run_pipeline(args)
+    LOGGER.info("Subject-identification summary: %s", json.dumps(summary, indent=2))
+
+
+if __name__ == "__main__":
+    main()

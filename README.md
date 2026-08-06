@@ -113,11 +113,87 @@ Run the subject identification pipeline from the repository root:
 python "Model Subject Ident/stewSubjectsIdentification.py"
 ```
 
+## Installation
+
+Requires Python 3.10+. From the repository root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[all]"        # every pipeline + dev tools (pytest, ruff, mypy)
+```
+
+Or install only what one pipeline needs:
+
+```bash
+pip install -e ".[gat]"            # Model GAT
+pip install -e ".[kuramotognn]"    # Model KuramotoGNN
+pip install -e ".[subject-ident]"  # Model Subject Ident (also installs tensorflow/keras)
+pip install -e ".[dev]"            # pytest, ruff, mypy
+```
+
+`eeg_config.py` at the repository root centralizes constants shared by all three
+pipelines (sampling frequency, channel names/regions, frequency bands, window and
+step duration, and `set_seed()` for Python/NumPy/PyTorch). Each pipeline script adds
+the repo root to `sys.path` at import time so `from eeg_config import ...` works
+whether the script is run directly or imported.
+
+## Grouped evaluation methodology (leakage prevention)
+
+STEW recordings are segmented into windows with 50% overlap (step < window), so a
+random window-level train/test split can put near-duplicate, overlapping windows from
+the same recording on both sides of the split — inflating reported accuracy. Every
+window keeps its subject id, condition, recording id, window index, and start time.
+
+- **Model KuramotoGNN** and **Model GAT** classify rest vs. high workload, so they use
+  `sklearn.model_selection.GroupKFold` keyed by subject id: all of a subject's windows
+  fall in exactly one fold, and fold-level metrics are aggregated as mean ± std.
+- **Model Subject Ident** classifies *subject identity*, so leave-subject-out CV is not
+  applicable (the subject is the label). Instead, each subject's windows are sorted in
+  time and split into contiguous temporal blocks assigned wholesale to train,
+  validation, and test, so overlapping/adjacent windows never cross a partition
+  boundary.
+- Feature scaling (`StandardScaler`) is fit on the training partition only in every
+  pipeline.
+- Reported metrics are window-level unless a README explicitly says recording- or
+  subject-level (e.g. Model GAT's `recording_accuracy`/`recording_auc`, computed from
+  the median predicted probability per recording).
+
+**Limitation:** window-level accuracy — even under grouped CV — measures how well a
+model distinguishes conditions/subjects *within this STEW cohort's recording
+sessions*. It is not evidence of generalization to a new recording session, a new day,
+or a different EEG headset/population.
+
+## Testing, linting, and type checking
+
+```bash
+pip install -e ".[dev]"
+python -m pytest -m "not slow"   # unit tests (seconds)
+python -m pytest -m slow         # reduced synthetic end-to-end smoke tests per pipeline
+python -m pytest                 # everything
+ruff check .
+ruff format --check .
+mypy eeg_config.py "Model GAT/stew_asi_gat_experiment.py" "Model KuramotoGNN/kuramoto_gnn_stew.py" "Model Subject Ident/stewSubjectsIdentification.py"
+```
+
+Tests live in `tests/` and use small synthetic arrays and `tmp_path` — they do not
+require the full STEW dataset. Slow tests run a reduced end-to-end pass of each
+pipeline against a synthetic 2-3 subject dataset in a temporary directory and never
+touch the checked-in `dataset/` or `Model */results` output.
+
 ## Notes on reproducibility
 
-- The repository uses Python 3.x and standard scientific libraries such as `numpy`, `pandas`, `scipy`, `matplotlib`, `torch`, `scikit-learn`, `keras`, and `mne`.
-- `Model KuramotoGNN/requirements.txt` lists the dependencies for the Kuramoto dynamics module.
-- For reproducible STEW analysis, keep the `dataset/` directory in place and use the folder-specific scripts as documented above.
+- Every pipeline accepts `--seed`, and `eeg_config.set_seed()` seeds Python's `random`,
+  NumPy, and PyTorch; the subject-identification pipeline additionally seeds Keras
+  training runs through the same call.
+- Every pipeline writes a `summary.json` alongside its other output, recording the
+  effective CLI arguments, seed, dataset file/subject/window counts, installed
+  dependency versions, and evaluation metrics — so a result can be traced back to the
+  exact configuration that produced it.
+- For reproducible STEW analysis, keep the `dataset/` directory in place and use the
+  folder-specific scripts as documented above; `Model KuramotoGNN/requirements.txt` is
+  kept for backward compatibility but `pyproject.toml` is the source of truth for
+  dependencies.
 
 ## References
 
